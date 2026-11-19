@@ -277,6 +277,8 @@ class Store:
         st.setdefault("last_check", "")
         st.setdefault("fired", {})
         self.data.setdefault("calendars", [])       # [v1.3.0] feliratkozott külső naptárak
+        self.data.setdefault("todos", [])           # [v1.4.0] teendők
+        self.data.setdefault("leave", {"birth_year": 0, "years": {}})   # [v1.4.0] szabadságkeret
 
     on_save = None          # [v1.3.0] visszahívás mentés után (pl. .ics közzététel)
 
@@ -375,6 +377,43 @@ class Store:
             self.shifts.pop(day.isoformat(), None)
         if save:
             self.save()
+
+    # ---------- [v1.4.0] teendők ----------
+    @property
+    def todos(self):
+        return self.data["todos"]
+
+    def todo(self, tid):
+        return next((t for t in self.todos if t["id"] == tid), None)
+
+    def upsert_todo(self, title, due="", notes="", tid=None):
+        t = self.todo(tid) if tid else None
+        if t is None:
+            t = {"id": uuid.uuid4().hex[:12], "done": False, "done_at": "",
+                 "created": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            self.todos.append(t)
+        t.update(title=title.strip()[:200], due=due or "", notes=notes or "")
+        self.save()
+        return t
+
+    def toggle_todo(self, tid):
+        t = self.todo(tid)
+        if t:
+            t["done"] = not t["done"]
+            t["done_at"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M") if t["done"] else ""
+            self.save()
+        return t
+
+    def delete_todo(self, tid):
+        self.data["todos"] = [t for t in self.todos if t["id"] != tid]
+        self.save()
+
+    def todos_on(self, d, include_overdue=False):
+        k = d.isoformat()
+        out = [t for t in self.todos if t.get("due") == k]
+        if include_overdue:
+            out = [t for t in self.todos if not t["done"] and t.get("due") and t["due"] < k] + out
+        return sorted(out, key=lambda t: (t["done"], t.get("due") or "9999", t["title"].casefold()))
 
     def merge_import(self, events):
         """[v1.3.0] Importált események: ami már megvan (azonos azonosító vagy .ics UID), az frissül."""

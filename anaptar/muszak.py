@@ -20,7 +20,7 @@ DEFAULT_TYPES = [
     {"code": "ÉJ", "name": "Éjszaka", "start": "22:00", "end": "06:00", "hours": 0, "color": "#2c3e50", "kind": "work", "reminder": 0},
     {"code": "N12", "name": "Nappal (12 óra)", "start": "06:00", "end": "18:00", "hours": 0, "color": "#16a085", "kind": "work", "reminder": 0},
     {"code": "É12", "name": "Éjszaka (12 óra)", "start": "18:00", "end": "06:00", "hours": 0, "color": "#8e44ad", "kind": "work", "reminder": 0},
-    {"code": "SZ", "name": "Szabadság", "start": "", "end": "", "hours": 8, "color": "#27ae60", "kind": "leave", "reminder": 0},
+    {"code": "SZ", "name": "Szabadság", "start": "", "end": "", "hours": 8, "color": "#27ae60", "kind": "leave", "reminder": 0, "counts_leave": True},
     {"code": "B", "name": "Betegszabadság", "start": "", "end": "", "hours": 8, "color": "#c0392b", "kind": "leave", "reminder": 0},
     {"code": "P", "name": "Pihenőnap", "start": "", "end": "", "hours": 0, "color": "#7f8c8d", "kind": "off", "reminder": 0},
 ]
@@ -88,6 +88,8 @@ def normalize_type(t):
         t["hours"] = 0.0
     t["kind"] = t.get("kind") if t.get("kind") in KINDS else "work"
     t["color"] = t.get("color") or "#7f8c8d"
+    # [v1.4.0] a szabadságkeretből fogy-e (régi adatoknál: az SZ kód igen)
+    t["counts_leave"] = bool(t["counts_leave"]) if "counts_leave" in t else (t["code"].upper() == "SZ")
     try:
         t["reminder"] = max(0, int(t.get("reminder") or 0))
     except ValueError:

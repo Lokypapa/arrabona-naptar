@@ -40,6 +40,9 @@ DEFAULT_SETTINGS = {
     "publish_dir": "",                 # [v1.3.0] ide írja ki az ArrabonaNaptar.ics-t (pl. Dropbox mappa)
     "publish_shifts": True,
     "publish_birthdays": True,
+    "weather_enabled": True,           # [v1.4.0] időjárás (open-meteo.com)
+    "weather_place": {"name": "Győr", "lat": 47.6875, "lon": 17.6504},
+    "update_check": True,              # [v1.4.0] önfrissítés GitHubról
 }
 
 

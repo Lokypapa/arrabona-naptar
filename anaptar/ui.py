@@ -11,7 +11,9 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import APP_NAME, VERSION
 from . import esemenyek as ev
-from . import feliratkozas, ical, muszak, nevnapok, unnepek
+import webbrowser
+
+from . import feliratkozas, ical, idojaras, muszak, nevnapok, szabadsag, unnepek, updater
 from .common import (COLORS, load_settings, res_path, save_settings, set_autostart, store_path)
 
 try:
@@ -25,6 +27,7 @@ except Exception:
 
 FONT = "Segoe UI"
 H = unnepek.HONAPOK
+HR = ("jan.", "febr.", "márc.", "ápr.", "máj.", "jún.", "júl.", "aug.", "szept.", "okt.", "nov.", "dec.")
 NAP = unnepek.NAPOK
 NAPR = unnepek.NAPOK_ROVID
 REMINDER_CHOICES = [(0, "Az esemény idején"), (10, "10 perccel előtte"), (15, "15 perccel előtte"),
@@ -163,7 +166,7 @@ class NaptarApp:
         self.store.on_save = self._schedule_publish
         self.today = _dt.date.today()
         self.sel = self.today
-        self.view = self.settings.get("view", "month") if self.settings.get("view") in ("month", "week", "list") \
+        self.view = self.settings.get("view", "month") if self.settings.get("view") in ("month", "week", "list", "todo") \
             else "month"
         self.icon = None
         self._q = queue.Queue()
@@ -171,6 +174,10 @@ class NaptarApp:
         self._tray_hint_shown = False
         self._icon_img = None
         self.paint_code = None          # [v1.1.0] műszak-"festés": None = ki, "" = törlés, kód
+        self.weather = idojaras.load_cache()      # [v1.4.0]
+        self._weather_busy = False
+        self.update_info = None
+        self._upd_shown = False
 
         root.title(f"{APP_NAME} v{VERSION}")
         root.geometry("1180x760")
@@ -187,6 +194,9 @@ class NaptarApp:
         root.after(60000, self._midnight_check)
         root.after(3000, self._sync_tick)
         root.after(4000, self._publish_now)
+        root.after(1500, self._weather_tick)
+        root.after(updater.FIRST_CHECK_MS, self._update_cycle)
+        self._tick_clock()
         if start_hidden and self.icon is not None:
             root.withdraw()
 
@@ -260,9 +270,29 @@ class NaptarApp:
         tk.Button(head, text="Beállítások", command=self.open_settings, **hb).pack(side=tk.RIGHT, padx=(6, 16))
         tk.Button(head, text="Névnap-kereső", command=self.open_name_search, **hb).pack(side=tk.RIGHT, padx=6)
         tk.Button(head, text="Naptárak", command=self.open_calendars, **hb).pack(side=tk.RIGHT, padx=6)
+        # [v1.4.0] pontos idő másodperccel
+        ck = tk.Frame(head, bg=COLORS['brand'])
+        ck.pack(side=tk.RIGHT, padx=(0, 22))
+        self.clock_lbl = tk.Label(ck, text="", bg=COLORS['brand'], fg=COLORS['white'], font=("Consolas", 20, "bold"))
+        self.clock_lbl.pack(anchor="e")
+        self.clock_sub = tk.Label(ck, text="", bg=COLORS['brand'], fg="#d5f5e3", font=(FONT, 9))
+        self.clock_sub.pack(anchor="e")
+
+        # [v1.4.0] frissítés-sáv (rejtve)
+        self.upd_banner = tk.Frame(r, bg="#e67e22")
+        self.upd_lbl = tk.Label(self.upd_banner, text="", bg="#e67e22", fg="white", font=(FONT, 10, "bold"))
+        self.upd_lbl.pack(side=tk.LEFT, padx=(14, 8), pady=7)
+        self.upd_btn = tk.Button(self.upd_banner, text="Telepítés és újraindítás", command=self.install_update,
+                                 font=(FONT, 9, "bold"), fg="white", bg="#b5561a", activebackground="#9a4a16",
+                                 activeforeground="white", relief=tk.FLAT, bd=0, cursor="hand2", padx=10, pady=3)
+        self.upd_btn.pack(side=tk.LEFT, pady=7)
+        tk.Button(self.upd_banner, text="Mi változott?", command=lambda: self.update_info and webbrowser.open(
+            self.update_info["url"]), font=(FONT, 9), fg="white", bg="#e67e22", activebackground="#d35400",
+                  activeforeground="white", relief=tk.FLAT, bd=0, cursor="hand2").pack(side=tk.LEFT, padx=10)
 
         tb = tk.Frame(r, bg=COLORS['bg'])
         tb.pack(fill=tk.X, padx=16, pady=(12, 8))
+        self._tb = tb
         btn(tb, "+ Új esemény", lambda: self.new_event(), primary=True).pack(side=tk.LEFT)
         btn(tb, "+ Születésnap", lambda: self.new_event(kind="birthday")).pack(side=tk.LEFT, padx=6)
         self.shift_btn = btn(tb, "Műszak", self.toggle_paint)
@@ -278,7 +308,7 @@ class NaptarApp:
         se.bind("<Return>", lambda e: self.do_search())
         tk.Label(tb, text="Keresés:", bg=COLORS['bg'], fg=COLORS['text_soft'], font=(FONT, 10)).pack(side=tk.RIGHT, padx=(16, 6))
         self.view_btns = {}
-        for key, txt in (("list", "Lista"), ("week", "Hét"), ("month", "Hónap")):
+        for key, txt in (("todo", "Teendők"), ("list", "Lista"), ("week", "Hét"), ("month", "Hónap")):
             b = btn(tb, txt, lambda k=key: self.set_view(k))
             b.pack(side=tk.RIGHT, padx=1)
             self.view_btns[key] = b
@@ -293,10 +323,12 @@ class NaptarApp:
         self._body_anchor.pack(fill=tk.X)
         body = tk.Frame(r, bg=COLORS['bg'])
         body.pack(fill=tk.BOTH, expand=True, padx=16)
-        self.side = tk.Frame(body, bg=COLORS['panel'], width=330, highlightthickness=1,
-                             highlightbackground=COLORS['divider'])
-        self.side.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
-        self.side.pack_propagate(False)
+        self.side_outer = tk.Frame(body, bg=COLORS['panel'], width=340, highlightthickness=1,
+                                   highlightbackground=COLORS['divider'])
+        self.side_outer.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+        self.side_outer.pack_propagate(False)
+        self.side = ScrollFrame(self.side_outer)                 # [v1.4.0] görgethető oldalpanel
+        self.side.pack(fill=tk.BOTH, expand=True)
         self.main = tk.Frame(body, bg=COLORS['panel'], highlightthickness=1,
                              highlightbackground=COLORS['divider'])
         self.main.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -364,10 +396,13 @@ class NaptarApp:
             if mon.month == sun.month:
                 rng = f"{H[mon.month - 1]} {mon.day}–{sun.day}."
             else:
-                rv = ("jan.", "febr.", "márc.", "ápr.", "máj.", "jún.", "júl.", "aug.", "szept.", "okt.", "nov.", "dec.")
-                rng = f"{rv[mon.month - 1]} {mon.day}. – {rv[sun.month - 1]} {sun.day}."
+                rng = f"{HR[mon.month - 1]} {mon.day}. – {HR[sun.month - 1]} {sun.day}."
             self.title_lbl.config(text=f"{mon.year}. {unnepek.iso_week(mon)}. hét · {rng}")
             self.render_week()
+        elif self.view == "todo":
+            n = sum(1 for t in self.store.todos if not t["done"])
+            self.title_lbl.config(text=f"Teendők – {n} nyitott")
+            self.render_todo()
         else:
             self.title_lbl.config(text=f"Lista – {hu_date(self.sel)[:-1]}-tól, 90 nap")
             self.render_list()
@@ -440,6 +475,10 @@ class NaptarApp:
         if sh:                                                   # [v1.1.0] műszak-jelvény
             tk.Label(top, text=sh["code"], bg=sh["color"] if in_month else _blend(sh["color"], bg, 0.5),
                      fg="#ffffff", font=(FONT, 8, "bold"), padx=3).pack(side=tk.LEFT, padx=(4, 0))
+        wd = self.weather_for(d)                                  # [v1.4.0] időjárás-ikon
+        if wd:
+            tk.Label(top, text=f"{idojaras.describe(wd['code'])[0]}{idojaras.fmt_t(wd['tmax'])}", bg=bg,
+                     fg=_blend(COLORS['text'], bg, 0.15 if in_month else 0.55), font=(FONT, 8)).pack(side=tk.RIGHT)
         if self.settings.get("show_namedays", True):
             names = nevnapok.names_for(d)
             hit = [n for n, _w in watched_on(self.store, d)]
@@ -460,6 +499,9 @@ class NaptarApp:
         for occ, e in items:
             t = (e["time"] + " " if not e.get("all_day") and e.get("time") and occ == d else "")
             lines.append((t + ev.display_title(e, d), COLORS['white'], e.get("color") or COLORS['brand'], False))
+        for td in self.store.todos_on(d):                         # [v1.4.0] teendők
+            if not td["done"]:
+                lines.append(("☐ " + td["title"], COLORS['warn'] if d < self.today else COLORS['text'], None, False))
         maxl = 4
         for i, (txt, fg, ebg, bold) in enumerate(lines[:maxl]):
             lb = tk.Label(cell, text=txt, bg=ebg or bg, fg=fg if in_month or ebg else _blend(fg, bg, 0.5),
@@ -504,10 +546,14 @@ class NaptarApp:
             hd.pack(fill=tk.X)
             tk.Label(hd, text=f"{NAP[d.weekday()]}", bg=COLORS['panel_head'],
                      fg=COLORS['holiday'] if info["red"] else COLORS['text'], font=(FONT, 10, "bold")).pack(pady=(6, 0))
-            tk.Label(hd, text=f"{H[d.month - 1][:3]}. {d.day}.", bg=COLORS['panel_head'],
+            tk.Label(hd, text=f"{HR[d.month - 1]} {d.day}.", bg=COLORS['panel_head'],
                      fg=COLORS['holiday'] if info["red"] else COLORS['text'], font=(FONT, 15, "bold")).pack()
             tk.Label(hd, text=", ".join(nevnapok.names_for(d)), bg=COLORS['panel_head'], fg=COLORS['text_soft'],
-                     font=(FONT, 8), wraplength=130).pack(pady=(0, 6))
+                     font=(FONT, 8), wraplength=130).pack(pady=(0, 2))
+            wd = self.weather_for(d)
+            tk.Label(hd, text=(f"{idojaras.describe(wd['code'])[0]} {idojaras.fmt_t(wd['tmax'])} / "
+                               f"{idojaras.fmt_t(wd['tmin'])}") if wd else "", bg=COLORS['panel_head'],
+                     fg=COLORS['text'], font=(FONT, 9)).pack(pady=(0, 6))
             sh = self.store.shift_on(d)
             if sh:
                 tk.Label(hd, text=f"{sh['name']} {muszak.label_time(sh)}", bg=sh["color"], fg="#ffffff",
@@ -519,6 +565,11 @@ class NaptarApp:
                       size=8, wraplength=140).pack(fill=tk.X, padx=4, pady=(2, 0))
             for j in info["jeles"]:
                 label(col, j, bg=bg, soft=True, size=8, wraplength=140).pack(fill=tk.X, padx=4, pady=(2, 0))
+            for td in self.store.todos_on(d):
+                tl = label(col, ("☑ " if td["done"] else "☐ ") + td["title"], bg=bg, size=9, wraplength=140,
+                           fg=COLORS['text_soft'] if td["done"] else COLORS['text'], justify=tk.LEFT, cursor="hand2")
+                tl.pack(fill=tk.X, padx=4, pady=(4, 0))
+                tl.bind("<Double-1>", lambda e_, tid=td["id"]: (self.store.toggle_todo(tid), self.render()))
             for occ, e in inst:
                 if not ev.covers(e, occ, d):
                     continue
@@ -612,9 +663,10 @@ class NaptarApp:
 
     # --- napi panel
     def render_side(self):
-        s = self.side
+        s = self.side.inner
         for w in s.winfo_children():
             w.destroy()
+        self.side.to_top()
         d = self.sel
         info = unnepek.day_info(d, self.swaps())
         pad = dict(padx=16)
@@ -649,7 +701,9 @@ class NaptarApp:
                   wraplength=290, justify=tk.LEFT).pack(anchor="w", pady=(6, 0), **pad)
         for j in info["jeles"]:
             label(s, "• " + j, size=9, wraplength=290, justify=tk.LEFT).pack(anchor="w", pady=(2, 0), **pad)
+        self._side_weather(s, d, pad)
         self._side_shift(s, d, pad)
+        self._side_leave(s, d, pad)
         tk.Frame(s, bg=COLORS['divider'], height=1).pack(fill=tk.X, pady=10, **pad)
         hf = tk.Frame(s, bg=COLORS['panel'])
         hf.pack(fill=tk.X, **pad)
@@ -689,6 +743,7 @@ class NaptarApp:
                 bx.pack(side=tk.RIGHT, padx=4)
             for w in ws:
                 w.bind("<Button-1>", lambda ev_, ee=e, oc=occ: self.edit_event(ee, oc))
+        self._side_todos(s, d, pad)
         up = self._upcoming_watched(d)
         if up:
             tk.Frame(s, bg=COLORS['divider'], height=1).pack(fill=tk.X, pady=8, **pad)
@@ -770,6 +825,7 @@ class NaptarApp:
         btn(pb, "Kész", self.toggle_paint, primary=True, small=True).pack(side=tk.RIGHT)
         btn(pb, "Műszaktípusok…", lambda: ShiftTypesDialog(self), small=True).pack(side=tk.RIGHT, padx=4)
         btn(pb, "Ismétlődő minta…", lambda: PatternDialog(self), small=True).pack(side=tk.RIGHT)
+        btn(pb, "Szabadság…", lambda: LeaveDialog(self), small=True).pack(side=tk.RIGHT, padx=4)
         cur = next((t for t in self.store.shift_types if t["code"] == self.paint_code), None)
         label(pb, f"  {cur['name']} {muszak.label_time(cur)}" if cur else "  (törlés)", bg=COLORS['bg'],
               soft=True, size=9).pack(side=tk.LEFT, padx=6)
@@ -796,6 +852,7 @@ class NaptarApp:
         m.add_command(label="Műszak törlése", command=lambda: (self.store.set_shift(d, ""), self.render()))
         m.add_command(label="Ismétlődő minta…", command=lambda: PatternDialog(self, start=d))
         m.add_command(label="Műszaktípusok…", command=lambda: ShiftTypesDialog(self))
+        m.add_command(label="Szabadság…", command=lambda: LeaveDialog(self, d.year))
         try:
             if event is not None:
                 m.tk_popup(event.x_root, event.y_root)
@@ -903,6 +960,18 @@ class NaptarApp:
                     if key not in fired:
                         fired[key] = now.isoformat(timespec="minutes")
                         due.append(("nameday", w, d, when, n))
+        # [v1.4.0] teendők: a határidő napján (az egész napos emlékeztető idején)
+        tt = ev._t(self.settings.get("allday_reminder_time", "08:00")) or _dt.time(8, 0)
+        for back in (1, 0):
+            d = now.date() - _dt.timedelta(days=back)
+            when = _dt.datetime.combine(d, tt)
+            if not (since < when <= now):
+                continue
+            for td in self.store.todos_on(d):
+                key = f"todo|{td['id']}|{d.isoformat()}"
+                if not td["done"] and key not in fired:
+                    fired[key] = now.isoformat(timespec="minutes")
+                    due.append(("todo", td, d, when, None))
         limit = (now - _dt.timedelta(days=90)).isoformat()
         for k in [k for k, v in fired.items() if v < limit]:
             del fired[k]
@@ -913,12 +982,16 @@ class NaptarApp:
             for kind, obj, d, when, extra in due:
                 lines.append(f"• {hu_date(d, year=False)}: " +
                              (ev.display_title(obj, d) if kind == "event" else
-                              f"Műszak: {obj['name']} {muszak.label_time(obj)}" if kind == "shift" else f"Névnap: {extra}"))
+                              f"Műszak: {obj['name']} {muszak.label_time(obj)}" if kind == "shift" else
+                              f"Teendő: {obj['title']}" if kind == "todo" else f"Névnap: {extra}"))
             ReminderPopup(self, "Emlékeztetők", "\n".join(lines[:12]) + ("\n…" if len(lines) > 12 else ""), None)
         else:
             for kind, obj, d, when, extra in due:
                 if kind == "event":
                     self._popup_event(obj, d, extra)
+                elif kind == "todo":
+                    ReminderPopup(self, "Teendő mára", f"☐ {obj['title']}\n{hu_date(d, weekday=True)}"
+                                  + (f"\n{obj['notes'][:200]}" if obj.get("notes") else ""), None)
                 elif kind == "shift":
                     ReminderPopup(self, "Műszak", f"{obj['name']}  {muszak.label_time(obj)}\n{hu_date(d, weekday=True)}"
                                   f"\n({obj['reminder']} perc múlva kezdődik)", None)
@@ -958,6 +1031,333 @@ class NaptarApp:
                 self.sel = self.today
             self.render()
         self.root.after(60000, self._midnight_check)
+
+    # ---------- [v1.4.0] óra ----------
+    def _tick_clock(self):
+        now = _dt.datetime.now()
+        try:
+            self.clock_lbl.config(text=now.strftime("%H:%M:%S"))
+            self.clock_sub.config(text=f"{hu_date(now.date())} {NAP[now.weekday()].lower()}")
+        except tk.TclError:
+            return
+        self.root.after(max(50, 1000 - now.microsecond // 1000 + 5), self._tick_clock)
+
+    # ---------- [v1.4.0] időjárás ----------
+    def place(self):
+        p = self.settings.get("weather_place") or {}
+        if not p.get("lat") and p.get("lat") != 0:
+            p = dict(idojaras.DEFAULT_PLACE)
+        return p
+
+    def weather_for(self, d):
+        if not self.settings.get("weather_enabled", True) or not self.weather:
+            return None
+        return (self.weather.get("daily") or {}).get(d.isoformat())
+
+    def _weather_tick(self):
+        try:
+            if self.settings.get("weather_enabled", True):
+                p = self.place()
+                w = self.weather
+                stale = (not w or (idojaras.age_minutes(w) or 9999) >= idojaras.REFRESH_MIN
+                         or w.get("place", {}).get("name") != p.get("name"))
+                if stale and not self._weather_busy:
+                    self.refresh_weather()
+        finally:
+            self.root.after(5 * 60 * 1000, self._weather_tick)
+
+    def refresh_weather(self, done=None):
+        if self._weather_busy:
+            return
+        self._weather_busy = True
+        p = self.place()
+
+        def finish(ok, res):
+            self._weather_busy = False
+            if ok:
+                res["place"] = p
+                self.weather = res
+                try:
+                    idojaras.save_cache(res)
+                except OSError:
+                    pass
+                self.render()
+            else:
+                self.status.config(text=str(res))
+            if done:
+                done(ok, res)
+        self.run_bg(lambda: idojaras.fetch(p["lat"], p["lon"]), finish)
+
+    def run_bg(self, func, done):
+        def work():
+            try:
+                res, ok = func(), True
+            except Exception as ex:
+                res, ok = ex, False
+            self.call_ui(lambda: done(ok, res))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _side_weather(self, s, d, pad):
+        wd = self.weather_for(d)
+        if not wd:
+            if self.settings.get("weather_enabled", True) and d == self.today and not self.weather:
+                label(s, "Időjárás betöltése…", soft=True, size=9).pack(anchor="w", pady=(8, 0), **pad)
+            return
+        w = self.weather
+        card = tk.Frame(s, bg=COLORS['panel_head'])
+        card.pack(fill=tk.X, pady=(10, 0), **pad)
+        hf = tk.Frame(card, bg=COLORS['panel_head'])
+        hf.pack(fill=tk.X, padx=8, pady=(6, 0))
+        label(hf, f"Időjárás · {w.get('place', {}).get('name', '')}", bold=True, size=9,
+              bg=COLORS['panel_head']).pack(side=tk.LEFT)
+        lk = label(hf, "⚙", soft=True, size=9, bg=COLORS['panel_head'], cursor="hand2")
+        lk.pack(side=tk.RIGHT)
+        lk.bind("<Button-1>", lambda e: PlaceDialog(self))
+        icon, txt = idojaras.describe(wd["code"])
+        cur = w.get("current") or {}
+        if d == self.today and cur.get("temp") is not None:
+            ci, ct = idojaras.describe(cur.get("code"))
+            label(card, f"{ci} {idojaras.fmt_t(cur['temp'])}  {ct}", bold=True, size=14,
+                  bg=COLORS['panel_head']).pack(anchor="w", padx=8)
+            extra = [f"érzésre {idojaras.fmt_t(cur.get('feels'))}"]
+            if cur.get("wind") is not None:
+                extra.append(f"szél {round(cur['wind'])} km/h")
+            if cur.get("hum") is not None:
+                extra.append(f"pára {round(cur['hum'])}%")
+            label(card, " · ".join(extra), size=8, bg=COLORS['panel_head']).pack(anchor="w", padx=8)
+            label(card, f"Napközben: {icon} {txt}, {idojaras.fmt_t(wd['tmax'])} / {idojaras.fmt_t(wd['tmin'])}",
+                  size=9, bg=COLORS['panel_head'], wraplength=290, justify=tk.LEFT).pack(anchor="w", padx=8, pady=(2, 0))
+        else:
+            label(card, f"{icon} {idojaras.fmt_t(wd['tmax'])} / {idojaras.fmt_t(wd['tmin'])}  {txt}", bold=True,
+                  size=12, bg=COLORS['panel_head'], wraplength=290, justify=tk.LEFT).pack(anchor="w", padx=8)
+        rain = []
+        if wd.get("pp") is not None:
+            rain.append(f"csapadék esélye {round(wd['pp'])}%")
+        if wd.get("psum"):
+            rain.append(f"{wd['psum']:.1f} mm".replace(".", ","))
+        if wd.get("wind") is not None:
+            rain.append(f"szél max. {round(wd['wind'])} km/h")
+        if rain:
+            label(card, " · ".join(rain), size=8, bg=COLORS['panel_head'], wraplength=290,
+                  justify=tk.LEFT).pack(anchor="w", padx=8)
+        if wd.get("sunrise"):
+            label(card, f"Napkelte {wd['sunrise']} · napnyugta {wd['sunset']}", soft=True, size=8,
+                  bg=COLORS['panel_head']).pack(anchor="w", padx=8)
+        if d == self.today:
+            hs = idojaras.next_hours(w)
+            if hs:
+                label(card, "   ".join(f"{h}h {idojaras.describe(c)[0]}{idojaras.fmt_t(t)}" for h, t, c, pp in hs[:5]),
+                      size=8, bg=COLORS['panel_head'], wraplength=300, justify=tk.LEFT).pack(anchor="w", padx=8, pady=(2, 0))
+        age = idojaras.age_minutes(w)
+        if age is not None:
+            when = "most" if age < 2 else (f"{age} perce" if age < 90 else f"{age // 60} órája")
+            label(card, f"frissítve {when} · open-meteo.com", soft=True, size=7,
+                  bg=COLORS['panel_head']).pack(anchor="w", padx=8, pady=(2, 6))
+
+    # ---------- [v1.4.0] szabadság ----------
+    def leave_summary(self, year):
+        return szabadsag.summary(self.store.data.get("leave"), self.store.shifts, self.store.shift_types, year,
+                                 self.today)
+
+    def _side_leave(self, s, d, pad):
+        sm = self.leave_summary(d.year)
+        if not sm["configured"] and not sm["taken"] and not sm["planned"]:
+            return
+        card = tk.Frame(s, bg=COLORS['panel_head'], cursor="hand2")
+        card.pack(fill=tk.X, pady=(6, 0), **pad)
+        l1 = label(card, f"Szabadság {d.year}: {sm['total']} nap", bold=True, size=9, bg=COLORS['panel_head'])
+        l1.pack(anchor="w", padx=8, pady=(6, 0))
+        col = COLORS['bad'] if sm["remaining"] < 0 else COLORS['ok']
+        l2 = label(card, f"kivett {len(sm['taken'])} · tervezett {len(sm['planned'])} · marad {sm['remaining']}",
+                   size=9, fg=col, bg=COLORS['panel_head'])
+        l2.pack(anchor="w", padx=8, pady=(0, 2 if sm["warn"] else 6))
+        ws = [card, l1, l2]
+        if sm["warn"]:
+            l3 = label(card, sm["warn"], size=8, fg=COLORS['warn'], bg=COLORS['panel_head'], wraplength=290,
+                       justify=tk.LEFT)
+            l3.pack(anchor="w", padx=8, pady=(0, 6))
+            ws.append(l3)
+        for w in ws:
+            w.bind("<Button-1>", lambda e: LeaveDialog(self, d.year))
+
+    # ---------- [v1.4.0] teendők ----------
+    def _todo_row(self, parent, td, bg, show_due=True, wrap=230):
+        row = tk.Frame(parent, bg=bg)
+        row.pack(fill=tk.X, pady=2)
+        cb = tk.Label(row, text="☑" if td["done"] else "☐", bg=bg, fg=COLORS['brand'] if td["done"] else COLORS['text'],
+                      font=(FONT, 13), cursor="hand2")
+        cb.pack(side=tk.LEFT, padx=(4, 4))
+        cb.bind("<Button-1>", lambda e: (self.store.toggle_todo(td["id"]), self.render()))
+        f = (FONT, 10, "overstrike") if td["done"] else (FONT, 10)
+        txt = tk.Label(row, text=td["title"], bg=bg, fg=COLORS['text_soft'] if td["done"] else COLORS['text'],
+                       font=f, anchor="w", justify=tk.LEFT, wraplength=wrap, cursor="hand2")
+        txt.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        txt.bind("<Button-1>", lambda e: TodoDialog(self, td))
+        if show_due and td.get("due"):
+            dd = ev._d(td["due"])
+            late = dd < self.today and not td["done"]
+            rel = (dd - self.today).days
+            dtxt = "ma" if rel == 0 else "holnap" if rel == 1 else hu_date(dd, year=dd.year != self.today.year)
+            tk.Label(row, text=dtxt, bg=bg, fg=COLORS['bad'] if late else COLORS['text_soft'],
+                     font=(FONT, 8, "bold" if late else "normal")).pack(side=tk.RIGHT, padx=4)
+        return row
+
+    def _side_todos(self, s, d, pad):
+        items = self.store.todos_on(d, include_overdue=(d == self.today))
+        tk.Frame(s, bg=COLORS['divider'], height=1).pack(fill=tk.X, pady=8, **pad)
+        hf = tk.Frame(s, bg=COLORS['panel'])
+        hf.pack(fill=tk.X, **pad)
+        label(hf, "Teendők", bold=True, size=11).pack(side=tk.LEFT)
+        btn(hf, "+ Teendő", lambda: TodoDialog(self, None, due=d), small=True).pack(side=tk.RIGHT)
+        lf = tk.Frame(s, bg=COLORS['panel'])
+        lf.pack(fill=tk.X, pady=(4, 0), **pad)
+        if not items:
+            label(lf, "Nincs teendő erre a napra.", soft=True, size=9).pack(anchor="w")
+        for td in items:
+            self._todo_row(lf, td, COLORS['panel'], show_due=td.get("due") != d.isoformat())
+
+    def render_todo(self):
+        m = self.main
+        top = tk.Frame(m, bg=COLORS['panel'])
+        top.pack(fill=tk.X, padx=14, pady=(12, 6))
+        self.todo_title = tk.StringVar()
+        self.todo_due = tk.StringVar()
+        label(top, "Új teendő:", size=10).pack(side=tk.LEFT)
+        te = entry(top, self.todo_title, width=36)
+        te.pack(side=tk.LEFT, padx=6, ipady=3)
+        label(top, "Határidő:", size=9, soft=True).pack(side=tk.LEFT, padx=(6, 0))
+        entry(top, self.todo_due, width=11).pack(side=tk.LEFT, padx=4, ipady=3)
+        btn(top, "Ma", lambda: self.todo_due.set(self.today.strftime("%Y.%m.%d.")), small=True).pack(side=tk.LEFT)
+        btn(top, "Holnap", lambda: self.todo_due.set((self.today + _dt.timedelta(days=1)).strftime("%Y.%m.%d.")),
+            small=True).pack(side=tk.LEFT, padx=2)
+        btn(top, "+ Hozzáad", self._quick_todo, primary=True, small=True).pack(side=tk.LEFT, padx=(8, 0))
+        te.bind("<Return>", lambda e: self._quick_todo())
+        self.todo_err = label(m, "", size=9, fg=COLORS['bad'])
+        self.todo_err.pack(anchor="w", padx=14)
+        sf = ScrollFrame(m)
+        sf.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        inner = sf.inner
+        t0 = self.today
+        groups = [("Lejárt", []), ("Ma", []), ("Holnap", []), ("A következő 7 napban", []), ("Később", []),
+                  ("Határidő nélkül", []), ("Kész", [])]
+        g = dict(groups)
+        for td in sorted(self.store.todos, key=lambda t: (t.get("due") or "9999", t["title"].casefold())):
+            if td["done"]:
+                g["Kész"].append(td)
+                continue
+            dd = ev._d(td.get("due"))
+            if not dd:
+                g["Határidő nélkül"].append(td)
+            elif dd < t0:
+                g["Lejárt"].append(td)
+            elif dd == t0:
+                g["Ma"].append(td)
+            elif dd == t0 + _dt.timedelta(days=1):
+                g["Holnap"].append(td)
+            elif dd <= t0 + _dt.timedelta(days=7):
+                g["A következő 7 napban"].append(td)
+            else:
+                g["Később"].append(td)
+        g["Kész"].sort(key=lambda t: t.get("done_at") or "", reverse=True)
+        if not self.store.todos:
+            label(inner, "Még nincs teendő. Írd be fent, és nyomj Entert.\n"
+                         "Határidővel a naptárban is megjelenik, és aznap reggel szól.",
+                  soft=True, size=10, justify=tk.LEFT).pack(anchor="w", padx=10, pady=16)
+        for name, lst in groups:
+            if not lst:
+                continue
+            hf = tk.Frame(inner, bg=COLORS['panel'])
+            hf.pack(fill=tk.X, padx=6, pady=(12, 2))
+            label(hf, f"{name}  ({len(lst)})", bold=True, size=11,
+                  fg=COLORS['bad'] if name == "Lejárt" else COLORS['text']).pack(side=tk.LEFT)
+            if name == "Kész":
+                btn(hf, "Kész teendők törlése", self._purge_done, small=True).pack(side=tk.RIGHT)
+            for td in lst[:30] if name == "Kész" else lst:
+                r = self._todo_row(inner, td, COLORS['panel_head'], wrap=560)
+                bx = btn(r, "✕", lambda tid=td["id"]: (self.store.delete_todo(tid), self.render()), small=True)
+                bx.pack(side=tk.RIGHT, padx=4)
+        te.focus_set()
+
+    def _quick_todo(self):
+        t = self.todo_title.get().strip()
+        if not t:
+            return
+        due = ""
+        if self.todo_due.get().strip():
+            d = parse_date(self.todo_due.get())
+            if not d:
+                self.todo_err.config(text="A határidőt így add meg: 2026.11.25. (vagy hagyd üresen)")
+                return
+            due = d.isoformat()
+        self.store.upsert_todo(t, due)
+        self.render()
+
+    def _purge_done(self):
+        n = sum(1 for t in self.store.todos if t["done"])
+        if n and messagebox.askyesno(APP_NAME, f"Törlöd a {n} kész teendőt?", parent=self.root):
+            self.store.data["todos"] = [t for t in self.store.todos if not t["done"]]
+            self.store.save()
+            self.render()
+
+    # ---------- [v1.4.0] önfrissítés ----------
+    def _update_cycle(self):
+        try:
+            if self.settings.get("update_check", True):
+                self.check_update()
+        finally:
+            self.root.after(updater.CHECK_MS, self._update_cycle)
+
+    def check_update(self, manual=False, parent=None):
+        def done(ok, res):
+            info, text = res if ok else (None, f"Hiba: {res}")
+            if info:
+                self.update_info = info
+                self.upd_lbl.config(text=f"Új verzió érhető el: v{info['ver']} (most: v{VERSION})")
+                if not self._upd_shown:
+                    self.upd_banner.pack(fill=tk.X, before=self._tb)
+                    self._upd_shown = True
+                if self.icon is not None and self.root.state() == "withdrawn":
+                    try:
+                        self.icon.notify(text, APP_NAME)
+                    except Exception:
+                        pass
+            if manual:
+                messagebox.showinfo(APP_NAME, text, parent=parent or self.root)
+        self.run_bg(updater.check, done)
+
+    def install_update(self):
+        info = self.update_info
+        if not info:
+            return
+        if not updater.can_self_update():
+            if messagebox.askyesno(APP_NAME, "Forrásból futtatva nem tudok frissülni.\n"
+                                   "Megnyissam a letöltési oldalt?", parent=self.root):
+                webbrowser.open(info["url"])
+            return
+        if not messagebox.askyesno(APP_NAME, f"Letöltöm és telepítem a v{info['ver']} verziót.\n\n"
+                                   "Az eseményeid, műszakjaid és beállításaid megmaradnak.\n"
+                                   "A Naptár bezárul, és a telepítés után újraindul. Mehet?", parent=self.root):
+            return
+        self.upd_btn.config(state=tk.DISABLED)
+
+        def prog(p):
+            self.call_ui(lambda: self.upd_lbl.config(text=f"Letöltés… {p}%"))
+
+        def done(ok, res):
+            if not ok:
+                self.upd_btn.config(state=tk.NORMAL)
+                self.upd_lbl.config(text=f"Új verzió érhető el: v{info['ver']}")
+                messagebox.showerror(APP_NAME, str(res), parent=self.root)
+                return
+            try:
+                updater.launch_installer(res)
+            except Exception as ex:
+                self.upd_btn.config(state=tk.NORMAL)
+                messagebox.showerror(APP_NAME, str(ex), parent=self.root)
+                return
+            self.quit_app()
+        self.upd_lbl.config(text="Letöltés…")
+        self.run_bg(lambda: updater.download_and_verify(info, prog), done)
 
     # ---------- [v1.3.0] külső naptárak, közzététel ----------
     def all_events(self):
@@ -1577,7 +1977,7 @@ class SettingsDialog(Dialog):
 
         self.v = {k: tk.BooleanVar(value=bool(s.get(k))) for k in
                   ("show_namedays", "show_jeles", "tray_on_close", "start_with_windows", "start_hidden",
-                   "sound", "nameday_reminder")}
+                   "sound", "nameday_reminder", "weather_enabled", "update_check")}
         for i, (k, t) in enumerate((("show_namedays", "Névnapok a havi nézetben"),
                                     ("show_jeles", "Jeles napok (anyák napja, advent, óraátállítás…) a havi nézetben"),
                                     ("tray_on_close", "Bezáráskor (X) a tálcára kerül – így az emlékeztetők is szólnak"),
@@ -1591,7 +1991,18 @@ class SettingsDialog(Dialog):
         ttk.Combobox(df, textvariable=self.dark, state="readonly", width=24,
                      values=["A Guard témáját követi", "Sötét", "Világos"]).pack(side=tk.LEFT, padx=6)
         label(df, "(újraindítás után)", soft=True, size=9).pack(side=tk.LEFT)
-        label(t1, f"Adatok: {app.store.path}", soft=True, size=8).grid(row=7, column=0, sticky="w", pady=(12, 0))
+        # [v1.4.0] időjárás, frissítés
+        wf = tk.Frame(t1, bg=COLORS['panel'])
+        wf.grid(row=7, column=0, sticky="w", pady=(10, 0))
+        check(wf, "Időjárás megjelenítése (open-meteo.com) – település:", self.v["weather_enabled"]).pack(side=tk.LEFT)
+        self.place_lbl = label(wf, app.place().get("name", ""), bold=True)
+        self.place_lbl.pack(side=tk.LEFT, padx=4)
+        btn(wf, "Módosítás…", lambda: PlaceDialog(app), small=True).pack(side=tk.LEFT, padx=4)
+        uf = tk.Frame(t1, bg=COLORS['panel'])
+        uf.grid(row=8, column=0, sticky="w", pady=(4, 0))
+        check(uf, "Frissítések keresése a GitHubon (6 óránként)", self.v["update_check"]).pack(side=tk.LEFT)
+        btn(uf, "Keresés most", lambda: app.check_update(manual=True, parent=self), small=True).pack(side=tk.LEFT, padx=8)
+        label(t1, f"Adatok: {app.store.path}", soft=True, size=8).grid(row=9, column=0, sticky="w", pady=(12, 0))
 
         label(t2, "Egész napos események és születésnapok emlékeztetője:").grid(row=0, column=0, sticky="w")
         self.allday_t = tk.StringVar(value=s.get("allday_reminder_time", "08:00"))
@@ -1674,6 +2085,8 @@ class SettingsDialog(Dialog):
         save_settings(s)
         set_autostart(s["start_with_windows"], hidden=s["start_hidden"])
         self.destroy()
+        if s.get("weather_enabled") and not self.app.weather:
+            self.app.refresh_weather()
         self.app.render()
 
 
@@ -1754,6 +2167,8 @@ class ShiftTypesDialog(Dialog):
             label(f, t, soft=True, size=8).grid(row=0, column=i, sticky="w", padx=(0, 6))
             entry(f, self.v[k], width=w).grid(row=1, column=i, sticky="w", padx=(0, 6), ipady=2)
         self.kind = tk.StringVar(value=muszak.KINDS["work"])
+        self.cl = tk.BooleanVar(value=False)                       # [v1.4.0]
+        check(f, "Szabadságkeretből fogy", self.cl).grid(row=3, column=6, columnspan=2, sticky="w", padx=(8, 0))
         label(f, "Fajta", soft=True, size=8).grid(row=2, column=0, sticky="w", pady=(6, 0))
         ttk.Combobox(f, textvariable=self.kind, values=list(muszak.KINDS.values()), state="readonly",
                      width=18).grid(row=3, column=0, columnspan=2, sticky="w")
@@ -1806,6 +2221,7 @@ class ShiftTypesDialog(Dialog):
             val = t.get(k, "")
             self.v[k].set("" if val in (0, 0.0) and k in ("hours", "reminder") else str(val))
         self.kind.set(muszak.KINDS[t["kind"]])
+        self.cl.set(bool(t.get("counts_leave")))
         self._color(t["color"])
 
     def _save_row(self):
@@ -1821,7 +2237,8 @@ class ShiftTypesDialog(Dialog):
         t = muszak.normalize_type({"code": code, "name": self.v["name"].get() or code,
                                    "start": parse_time(self.v["start"].get()) or "", "end": parse_time(self.v["end"].get()) or "",
                                    "hours": self.v["hours"].get().replace(",", ".") or 0, "kind": inv[self.kind.get()],
-                                   "color": self.color, "reminder": self.v["reminder"].get() or 0})
+                                   "color": self.color, "reminder": self.v["reminder"].get() or 0,
+                                   "counts_leave": bool(self.cl.get())})
         if t["kind"] == "work" and not muszak.span(t) and not t["hours"]:
             self.err.config(text="Munkaműszaknál add meg a kezdést és a véget (vagy az órák számát).")
             return
@@ -2303,3 +2720,314 @@ class ExtEventDialog(Dialog):
         self.destroy()
         self.app.render()
         EventDialog(self.app, self.app.store.get(n["id"]), ev._d(n["date"]))
+
+
+# ======================================================================
+#  [v1.4.0] Görgethető keret, teendők, szabadság, időjárás-település
+# ======================================================================
+class ScrollFrame(tk.Frame):
+    """Függőlegesen görgethető keret (egérgörgővel is). A tartalom a .inner-be kerül."""
+
+    def __init__(self, parent, bg=None):
+        bg = bg or COLORS['panel']
+        super().__init__(parent, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.sb = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.sb.set)
+        self.sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.inner = tk.Frame(self.canvas, bg=bg)
+        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self._win, width=e.width))
+        self.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._wheel))
+        self.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+
+    def _wheel(self, e):
+        try:
+            if self.inner.winfo_height() > self.canvas.winfo_height():
+                self.canvas.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
+        except (tk.TclError, TypeError):
+            pass
+
+    def to_top(self):
+        try:
+            self.canvas.yview_moveto(0)
+        except tk.TclError:
+            pass
+
+
+class TodoDialog(Dialog):
+    def __init__(self, app, td, due=None):
+        super().__init__(app, "Teendő szerkesztése" if td else "Új teendő")
+        b = self.body
+        self.td = td
+        label(b, "Teendő *").grid(row=0, column=0, sticky="w")
+        self.title_v = tk.StringVar(value=td["title"] if td else "")
+        te = entry(b, self.title_v, width=44)
+        te.grid(row=1, column=0, columnspan=4, sticky="we", ipady=4, pady=(2, 10))
+        label(b, "Határidő (üresen is hagyhatod)").grid(row=2, column=0, sticky="w")
+        d0 = ev._d(td.get("due")) if td else due
+        self.due_v = tk.StringVar(value=d0.strftime("%Y.%m.%d.") if d0 else "")
+        entry(b, self.due_v, width=12).grid(row=3, column=0, sticky="w", ipady=3, pady=(2, 10))
+        qf = tk.Frame(b, bg=COLORS['panel'])
+        qf.grid(row=3, column=1, columnspan=3, sticky="w", padx=6)
+        t = app.today
+        for txt, dd in (("Ma", t), ("Holnap", t + _dt.timedelta(days=1)),
+                        ("Jövő hét", t + _dt.timedelta(days=7 - t.weekday())), ("Nincs", None)):
+            btn(qf, txt, lambda x=dd: self.due_v.set(x.strftime("%Y.%m.%d.") if x else ""), small=True).pack(
+                side=tk.LEFT, padx=1)
+        label(b, "Megjegyzés").grid(row=4, column=0, sticky="w")
+        self.notes = tk.Text(b, width=44, height=4, font=(FONT, 10), bg=COLORS['entry'], fg=COLORS['text'],
+                             insertbackground=COLORS['text'], relief=tk.FLAT, highlightthickness=1,
+                             highlightbackground=COLORS['divider'], wrap=tk.WORD)
+        self.notes.grid(row=5, column=0, columnspan=4, sticky="we", pady=(2, 0))
+        if td:
+            self.notes.insert("1.0", td.get("notes", ""))
+        self.err = label(b, "", size=9, fg=COLORS['bad'])
+        self.err.grid(row=6, column=0, columnspan=4, sticky="w")
+        bf = tk.Frame(b, bg=COLORS['panel'])
+        bf.grid(row=7, column=0, columnspan=4, sticky="we", pady=(10, 0))
+        if td:
+            btn(bf, "Törlés", self.delete, danger=True).pack(side=tk.LEFT)
+            btn(bf, "Kész ✓" if not td["done"] else "Újranyitás", self.toggle).pack(side=tk.LEFT, padx=6)
+        btn(bf, "Mégse", self.destroy).pack(side=tk.RIGHT)
+        btn(bf, "Mentés", self.save, primary=True).pack(side=tk.RIGHT, padx=6)
+        te.bind("<Return>", lambda e: self.save())
+        te.focus_set()
+        self.finish()
+
+    def save(self):
+        t = self.title_v.get().strip()
+        if not t:
+            self.err.config(text="Írd be, mi a teendő.")
+            return
+        due = ""
+        if self.due_v.get().strip():
+            d = parse_date(self.due_v.get())
+            if not d:
+                self.err.config(text="A határidőt így add meg: 2026.11.25.")
+                return
+            due = d.isoformat()
+        self.app.store.upsert_todo(t, due, self.notes.get("1.0", "end").strip(), tid=self.td["id"] if self.td else None)
+        self.destroy()
+        self.app.render()
+
+    def toggle(self):
+        self.app.store.toggle_todo(self.td["id"])
+        self.destroy()
+        self.app.render()
+
+    def delete(self):
+        if messagebox.askyesno(APP_NAME, f"Törlöd ezt a teendőt?\n\n{self.td['title']}", parent=self):
+            self.app.store.delete_todo(self.td["id"])
+            self.destroy()
+            self.app.render()
+
+
+class LeaveDialog(Dialog):
+    """Szabadságkeret beállítása és a kivett / tervezett napok."""
+
+    def __init__(self, app, year=None):
+        super().__init__(app, "Szabadság")
+        self.year = year or app.sel.year
+        self.leave = app.store.data.setdefault("leave", {"birth_year": 0, "years": {}})
+        b = self.body
+        yf = tk.Frame(b, bg=COLORS['panel'])
+        yf.grid(row=0, column=0, columnspan=4, sticky="w")
+        btn(yf, "◀", lambda: self._go(-1), small=True).pack(side=tk.LEFT)
+        self.y_lbl = label(yf, "", bold=True, size=14)
+        self.y_lbl.pack(side=tk.LEFT, padx=10)
+        btn(yf, "▶", lambda: self._go(1), small=True).pack(side=tk.LEFT)
+
+        f = tk.Frame(b, bg=COLORS['panel'])
+        f.grid(row=1, column=0, columnspan=4, sticky="w", pady=(12, 0))
+        self.v = {k: tk.StringVar() for k in ("birth_year", "children", "disabled", "extra", "carried", "manual")}
+        rows = (("birth_year", "Születési éved (az életkor szerinti pótszabadsághoz):"),
+                ("children", "16 évesnél fiatalabb gyermekek száma ebben az évben:"),
+                ("disabled", "…ebből fogyatékos gyermek (+2 nap / gyermek):"),
+                ("extra", "Egyéb pótszabadság (nap):"),
+                ("carried", "Előző évről áthozott napok:"),
+                ("manual", "Kézi keret (ha a munkáltatód mást ad, pl. időarányosan – üresen: számolt):"))
+        for i, (k, t) in enumerate(rows):
+            label(f, t, size=9).grid(row=i, column=0, sticky="w", pady=2)
+            e = entry(f, self.v[k], width=7)
+            e.grid(row=i, column=1, sticky="w", padx=8, ipady=2)
+            self.v[k].trace_add("write", lambda *a: self._preview())
+        self.calc = label(b, "", size=10, bold=True, wraplength=520, justify=tk.LEFT)
+        self.calc.grid(row=2, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        self.parts = label(b, "", soft=True, size=9, wraplength=520, justify=tk.LEFT)
+        self.parts.grid(row=3, column=0, columnspan=4, sticky="w")
+        self.days = label(b, "", size=9, wraplength=520, justify=tk.LEFT)
+        self.days.grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        codes = ", ".join(sorted(szabadsag.leave_codes(app.store.shift_types))) or "nincs ilyen"
+        label(b, f"Szabadságnak a(z) {codes} műszaktípusú napok számítanak (Műszaktípusok → „Szabadságkeretből "
+                 "fogy”). A mai napig kivettnek, utána tervezettnek számítanak.\n"
+                 "Alap: 20 nap + életkor szerint 1–10 nap (25 éves kortól) + gyermekek után 2 / 4 / 7 nap (Mt. 116–118. §).",
+              soft=True, size=8, wraplength=520, justify=tk.LEFT).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        self.err = label(b, "", size=9, fg=COLORS['bad'])
+        self.err.grid(row=6, column=0, columnspan=4, sticky="w")
+        bf = tk.Frame(b, bg=COLORS['panel'])
+        bf.grid(row=7, column=0, columnspan=4, sticky="we", pady=(10, 0))
+        btn(bf, "Szabadság bejelölése a naptárban", self.paint, small=True).pack(side=tk.LEFT)
+        btn(bf, "Bezár", self.destroy).pack(side=tk.RIGHT)
+        btn(bf, "Mentés", self.save, primary=True).pack(side=tk.RIGHT, padx=6)
+        self._load()
+        self.finish()
+
+    def _load(self):
+        self.y_lbl.config(text=f"{self.year}. év")
+        cfg = szabadsag.year_cfg(self.leave, self.year)
+        self._loading = True
+        self.v["birth_year"].set(str(self.leave.get("birth_year") or ""))
+        for k in ("children", "disabled", "extra", "carried"):
+            self.v[k].set(str(cfg.get(k) or 0))
+        self.v["manual"].set("" if cfg.get("manual") in (None, "", 0) else str(cfg["manual"]))
+        self._loading = False
+        self._preview()
+
+    def _read(self):
+        def num(k, lo=0, hi=400, empty=0):
+            t = self.v[k].get().strip()
+            if not t:
+                return empty
+            try:
+                n = int(t)
+            except ValueError:
+                raise ValueError(k)
+            if not lo <= n <= hi:
+                raise ValueError(k)
+            return n
+        by = num("birth_year", 0, 2100)
+        if by and not 1930 <= by <= self.year:
+            raise ValueError("birth_year")
+        return by, {"children": num("children", 0, 20), "disabled": num("disabled", 0, 20),
+                    "extra": num("extra", 0, 100), "carried": num("carried", 0, 100),
+                    "manual": num("manual", 0, 200, None)}
+
+    def _preview(self):
+        if getattr(self, "_loading", False) or not hasattr(self, "calc"):
+            return
+        try:
+            by, cfg = self._read()
+            self.err.config(text="")
+        except ValueError:
+            self.err.config(text="Csak számokat írj be (a születési év pl. 1985).")
+            return
+        tmp = {"birth_year": by, "years": dict(self.leave.get("years") or {})}
+        tmp["years"][str(self.year)] = cfg
+        sm = szabadsag.summary(tmp, self.app.store.shifts, self.app.store.shift_types, self.year, self.app.today)
+        p = sm["parts"]
+        self.calc.config(text=f"Keret: {sm['total']} nap  ·  kivett: {len(sm['taken'])}  ·  tervezett: "
+                              f"{len(sm['planned'])}  ·  marad: {sm['remaining']}",
+                         fg=COLORS['bad'] if sm["remaining"] < 0 else COLORS['text'])
+        if "manual" in p:
+            pt = f"Kézi keret {p['manual']} nap" + (f" + áthozott {p['carried']}" if p["carried"] else "")
+        else:
+            pt = (f"Alap 20 + életkor {p['age']} + gyermek {p['children']}"
+                  + (f" + egyéb {p['extra']}" if p["extra"] else "") + (f" + áthozott {p['carried']}" if p["carried"] else ""))
+        self.parts.config(text=pt + (f"\n{sm['warn']}" if sm["warn"] else ""))
+
+        def fmt(lst):
+            if not lst:
+                return "–"
+            by_m = {}
+            for d in lst:
+                by_m.setdefault(d.month, []).append(str(d.day))
+            return "; ".join(f"{HR[m - 1]} {', '.join(v)}" for m, v in sorted(by_m.items()))
+        self.days.config(text=f"Kivett: {fmt(sm['taken'])}\nTervezett: {fmt(sm['planned'])}")
+
+    def save(self):
+        try:
+            by, cfg = self._read()
+        except ValueError:
+            self.err.config(text="Csak számokat írj be (a születési év pl. 1985).")
+            return False
+        self.leave["birth_year"] = by
+        self.leave.setdefault("years", {})[str(self.year)] = cfg
+        self.app.store.save()
+        self.app.render_side()
+        self.err.config(text="Elmentve.", fg=COLORS['ok'])
+        return True
+
+    def _go(self, step):
+        if self.save():
+            self.year += step
+            self._load()
+
+    def paint(self):
+        if not self.save():
+            return
+        code = next(iter(sorted(szabadsag.leave_codes(self.app.store.shift_types))), None)
+        self.destroy()
+        if code:
+            if self.app.paint_code is None:
+                self.app.toggle_paint()
+            self.app._set_paint(code)
+            self.app.render()
+
+
+class PlaceDialog(Dialog):
+    """Település választása az időjáráshoz."""
+
+    def __init__(self, app):
+        super().__init__(app, "Időjárás – település")
+        b = self.body
+        cur = app.place()
+        label(b, f"Most: {cur.get('name')}", bold=True, size=11).grid(row=0, column=0, columnspan=3, sticky="w")
+        self.q = tk.StringVar()
+        e = entry(b, self.q, width=28)
+        e.grid(row=1, column=0, sticky="w", ipady=3, pady=(8, 0))
+        e.bind("<Return>", lambda ev_: self.search())
+        btn(b, "Keresés", self.search, primary=True, small=True).grid(row=1, column=1, padx=6, pady=(8, 0))
+        self.lb = tk.Listbox(b, width=52, height=8, bg=COLORS['entry'], fg=COLORS['text'], font=(FONT, 10),
+                             relief=tk.FLAT, highlightthickness=1, highlightbackground=COLORS['divider'])
+        self.lb.grid(row=2, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        self.lb.bind("<Double-1>", lambda ev_: self.choose())
+        self.msg = label(b, "Írd be a település nevét (pl. Győr, Mosonmagyaróvár), majd Keresés.", soft=True, size=9,
+                         wraplength=420, justify=tk.LEFT)
+        self.msg.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.res = []
+        bf = tk.Frame(b, bg=COLORS['panel'])
+        bf.grid(row=4, column=0, columnspan=3, sticky="we", pady=(10, 0))
+        btn(bf, "Mégse", self.destroy).pack(side=tk.RIGHT)
+        btn(bf, "Kiválaszt", self.choose, primary=True).pack(side=tk.RIGHT, padx=6)
+        e.focus_set()
+        self.finish()
+
+    def search(self):
+        q = self.q.get().strip()
+        if len(q) < 2:
+            return
+        self.msg.config(text="Keresés…")
+
+        def done(ok, res):
+            try:
+                if not self.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            self.lb.delete(0, tk.END)
+            if not ok:
+                self.msg.config(text=str(res))
+                return
+            self.res = res
+            for r in res:
+                self.lb.insert(tk.END, f"{r['name']}  –  {r['region']}, {r['country']}".replace(" – , ", " – "))
+            self.msg.config(text="Nincs találat." if not res else "Válaszd ki, majd Kiválaszt (vagy dupla kattintás).")
+            if res:
+                self.lb.selection_set(0)
+        self.app.run_bg(lambda: idojaras.geocode(q), done)
+
+    def choose(self):
+        s = self.lb.curselection()
+        if not s or not self.res:
+            return
+        r = self.res[s[0]]
+        self.app.settings["weather_place"] = {"name": r["name"], "lat": r["lat"], "lon": r["lon"]}
+        self.app.settings["weather_enabled"] = True
+        save_settings(self.app.settings)
+        self.destroy()
+        self.app.weather = None
+        self.app.render()
+        self.app.refresh_weather()
