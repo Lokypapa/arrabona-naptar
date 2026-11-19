@@ -1,4 +1,4 @@
-# Arrabona Naptár v1.3.0
+# Arrabona Naptár v1.4.0
 
 Saját Windows-os naptár magyar ünnepekkel, névnapokkal és emlékeztetőkkel. Az [Arrabona Guard](https://github.com/Lokypapa/arrabona-guard) és az [Arrabona Pass](https://github.com/Lokypapa/arrabona-pass) testvérprogramja: ugyanaz a stílus, és követi a Guard sötét vagy világos témáját.
 
@@ -27,6 +27,19 @@ Saját Windows-os naptár magyar ünnepekkel, névnapokkal és emlékeztetőkkel
   - Bejelölés: a **Műszak** gombbal megjelenik a színes gombsor. Válassz típust, és kattints a napokra; ugyanarra újra kattintva törlődik. Jobb gombbal egy napon rögtön is beállíthatod.
   - **Ismétlődő minta:** pl. `N12 É12 - -` (12 órás forgó), vagy hetente váltott 2 vagy 3 műszak. Egy kattintással kitölti akár az egész évet. Kérésre az ünnepnapokat üresen hagyja, és a már bejelölt szabadságot nem írja felül.
   - **Havi összesítés** a napi panelen: hány műszak és hány munkaóra, fizetett távollét, éjszakai órák (22–6), hétvégi és ünnepnapi órák, valamint a **havi munkaidőkeret** (munkanapok × 8 óra) és az eltérés (túlóra vagy hiány).
+- **Pontos idő (v1.4.0)** másodpercre a fejlécben, alatta a dátum és a nap.
+- **Időjárás (v1.4.0)** az open-meteo.com ingyenes, regisztráció nélküli szolgáltatásából, alapból Győrre (Beállítások vagy a ⚙ jel: bármelyik település):
+  - 16 napra előre: a havi cellákban ikon és maximum, a hét nézetben max/min.
+  - A napi panelen: mostani hőmérséklet és érzet, szél, páratartalom, csapadék esélye és mennyisége, napkelte és napnyugta, a következő órák.
+  - Félóránként frissül, internet nélkül a legutóbbi állapot látszik.
+- **Teendőlista (v1.4.0)** – **Teendők** nézet:
+  - Gyors felvitel Enterrel, határidővel vagy anélkül; csoportok: Lejárt / Ma / Holnap / 7 napon belül / Később / Határidő nélkül / Kész.
+  - A határidős teendők a naptárban és a napi panelen is ☐ jellel látszanak, és aznap reggel (az egész napos emlékeztető idején) szól a program.
+- **Szabadság-nyilvántartás (v1.4.0)** – a napi panel Szabadság kártyája, vagy Műszak → Szabadság…:
+  - A keretet az Mt. szerint számolja: 20 nap alap, életkor szerinti pótszabadság (25 éves kortól 1–10 nap), gyermekek után 2/4/7 nap (fogyatékos gyermekenként +2). Hozzáadható egyéb pótszabadság és az előző évről áthozott nap, vagy megadható kézi keret.
+  - A kivett (mai napig) és tervezett napokat a műszakbeosztásból veszi: alapból az SZ napokat (a Műszaktípusoknál bármelyik típusra bekapcsolható a „Szabadságkeretből fogy”).
+  - Októbertől figyelmeztet, ha még maradt beosztatlan szabadság, és akkor is, ha túllépted a keretet.
+- **Önfrissítés (v1.4.0):** 6 óránként megnézi a GitHubon a legújabb kiadást, és ha van újabb, narancs sávban felajánlja. Ellenőrzött letöltés (SHA256), csendes telepítés, utána automatikus újraindulás. Kikapcsolható; kézi keresés: Beállítások → „Keresés most”.
 - **Több naptár, szinkron (v1.3.0)** – fejléc → **Naptárak**:
   - **Feliratkozás** bármennyi külső naptárra a .ics címükkel: Google Naptár („Titkos cím iCal formátumban”), iCloud (nyilvános naptár linkje), Outlook.com (közzétett ICS-link), vagy egy .ics fájl a gépen. Mindegyik saját színnel jelenik meg, ki-be kapcsolható, 15/30/60/180 percenként frissül, és internet nélkül is látszik a legutóbbi állapota. Kérésre emlékeztetőt is ad az eseményeihez.
   - A külső események csak olvashatók (a módosításuk az eredeti helyükön történik). Egy kattintással **másolatot** kérhetsz belőlük a saját naptáradba, akár egyesével, akár az egész naptárat.
