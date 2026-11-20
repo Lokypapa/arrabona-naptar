@@ -6,6 +6,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -13,7 +14,7 @@ from . import APP_NAME, VERSION
 from . import esemenyek as ev
 import webbrowser
 
-from . import feliratkozas, ical, idojaras, muszak, nevnapok, szabadsag, unnepek, updater
+from . import feliratkozas, ical, idojaras, mobil, muszak, nevnapok, szabadsag, unnepek, updater
 from .common import (COLORS, load_settings, res_path, save_settings, set_autostart, store_path)
 
 try:
@@ -163,6 +164,7 @@ class NaptarApp:
         self._syncing = set()
         self._pub_last = None
         self._pub_pending = False
+        self._mob_last = None           # [v1.5.0] telefonos adatfájl utolsó tartalma
         self.store.on_save = self._schedule_publish
         self.today = _dt.date.today()
         self.sel = self.today
@@ -194,6 +196,7 @@ class NaptarApp:
         root.after(60000, self._midnight_check)
         root.after(3000, self._sync_tick)
         root.after(4000, self._publish_now)
+        root.after(8000, self._phone_poll)
         root.after(1500, self._weather_tick)
         root.after(updater.FIRST_CHECK_MS, self._update_cycle)
         self._tick_clock()
@@ -1419,10 +1422,74 @@ class NaptarApp:
             return None
         try:
             path, self._pub_last = feliratkozas.publish(self.store, self.settings, self._pub_last)
-            return path
         except OSError as ex:
             self.status.config(text=f"A naptár közzététele nem sikerült: {ex}")
             return None
+        self._publish_mobile()
+        return path
+
+    # ---------- [v1.5.0] Arrabona Naptár Mobil ----------
+    def _publish_mobile(self, force=False):
+        folder = self.settings.get("publish_dir")
+        if not folder or not self.settings.get("publish_mobile", True):
+            return None
+        try:
+            data = mobil.build(self.store, self.subs.events(), self.settings, self.today)
+            path, self._mob_last = mobil.write(folder, data, None if force else self._mob_last)
+            return path
+        except OSError as ex:
+            self.status.config(text=f"A telefonos adatfájl kiírása nem sikerült: {ex}")
+            return None
+
+    def _phone_poll(self):
+        try:
+            self.phone_merge()
+        except Exception as ex:                  # a figyelő soha ne álljon le
+            self.status.config(text=f"Telefonos változások: {ex}")
+        self.root.after(10000, self._phone_poll)
+
+    def phone_merge(self):
+        s = self.settings
+        folder = s.get("publish_dir")
+        if not folder or not s.get("publish_mobile", True):
+            return None
+        path = os.path.join(folder, mobil.PHONE_NAME)
+        try:
+            stt = os.stat(path)
+        except OSError:
+            return None
+        if time.time() - stt.st_mtime < 3:
+            return None                          # a Dropbox még írhatja
+        try:
+            data = mobil.read_phone(path)
+        except mobil.PhoneError as ex:
+            sig = f"{stt.st_size}:{int(stt.st_mtime)}"
+            if s.get("phone_bad_sig") != sig:
+                s["phone_bad_sig"] = sig
+                save_settings(s)
+                self.status.config(text=str(ex))
+            return None
+        stats = mobil.apply_ops(self.store, data["ops"], s)
+        try:
+            os.remove(path)                      # átvéve
+        except OSError:
+            pass
+        self._pub_last = None
+        self._publish_now()
+        self._publish_mobile(force=True)         # a telefon visszakapja az „átvettem” listát
+        self.render()
+        parts = []
+        if stats["events"]:
+            parts.append(f"{stats['events']} esemény")
+        if stats["todos"]:
+            parts.append(f"{stats['todos']} teendő")
+        if stats["shifts"]:
+            parts.append(f"{stats['shifts']} műszak")
+        msg = "Telefonról átvéve: " + (", ".join(parts) if parts else "nem volt új változás")
+        if stats["conflicts"]:
+            msg += f" · {stats['conflicts']} változás kimaradt, mert közben a gépen módosult"
+        self.status.config(text=msg)
+        return stats
 
     def open_calendars(self):
         CalendarsDialog(self)
@@ -2376,7 +2443,9 @@ PUB_HELP = (
     "A program ebbe a mappába folyamatosan kiírja az ArrabonaNaptar.ics fájlt (minden változáskor).\n"
     "Telefonra: tedd a Dropbox mappádba, a Dropboxban kérj rá megosztási linket, és iPhone-on:\n"
     "Beállítások → Naptár → Fiókok → Fiók hozzáadása → Egyéb → Előfizetett naptár hozzáadása → link.\n"
-    "Google Naptárban: Egyéb naptárak + → „URL-alapú” → ugyanez a link.")
+    "Google Naptárban: Egyéb naptárak + → „URL-alapú” → ugyanez a link.\n"
+    "Telefonos app: https://lokypapa.github.io/arrabona-naptar/ – ugyanebből a mappából olvassa az "
+    "ArrabonaNaptar_mobil.json-t, és ide küldi vissza a változásokat.")
 
 
 class CalendarsDialog(Dialog):
@@ -2454,8 +2523,10 @@ class CalendarsDialog(Dialog):
         of.grid(row=10, column=0, columnspan=4, sticky="w", pady=(4, 0))
         self.p_sh = tk.BooleanVar(value=app.settings.get("publish_shifts", True))
         self.p_bd = tk.BooleanVar(value=app.settings.get("publish_birthdays", True))
+        self.p_mob = tk.BooleanVar(value=app.settings.get("publish_mobile", True))
         check(of, "Műszakok is", self.p_sh).pack(side=tk.LEFT)
         check(of, "Születésnapok is", self.p_bd).pack(side=tk.LEFT, padx=10)
+        check(of, "Telefonos app (Arrabona Naptár Mobil) adatai is", self.p_mob).pack(side=tk.LEFT)
         label(b, PUB_HELP, soft=True, size=9, justify=tk.LEFT, wraplength=640).grid(
             row=11, column=0, columnspan=4, sticky="w", pady=(6, 0))
         self.pub_state = label(b, "", size=9, fg=COLORS['brand'], wraplength=640, justify=tk.LEFT)
@@ -2624,12 +2695,14 @@ class CalendarsDialog(Dialog):
         s["publish_dir"] = self.pub.get().strip()
         s["publish_shifts"] = bool(self.p_sh.get())
         s["publish_birthdays"] = bool(self.p_bd.get())
+        s["publish_mobile"] = bool(self.p_mob.get())
         save_settings(s)
 
     def save_close(self):
         self._apply_settings()
         if self.app.settings.get("publish_dir"):
             self.app._pub_last = None
+            self.app._mob_last = None
             path = self.app._publish_now()
             if path:
                 self.app.status.config(text=f"Saját naptár kiírva: {path}")

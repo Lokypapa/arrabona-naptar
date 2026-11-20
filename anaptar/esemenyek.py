@@ -392,7 +392,7 @@ class Store:
             t = {"id": uuid.uuid4().hex[:12], "done": False, "done_at": "",
                  "created": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             self.todos.append(t)
-        t.update(title=title.strip()[:200], due=due or "", notes=notes or "")
+        t.update(title=title.strip()[:200], due=due or "", notes=notes or "", modified=now_ts())
         self.save()
         return t
 
@@ -401,6 +401,7 @@ class Store:
         if t:
             t["done"] = not t["done"]
             t["done_at"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M") if t["done"] else ""
+            t["modified"] = now_ts()
             self.save()
         return t
 
