@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.open-meteo.com https://www.dropbox.com https://dl.dropboxusercontent.com https://*.dropboxusercontent.com; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#16161c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Arrabona Naptár">
+<meta name="format-detection" content="telephone=no">
+<title>Arrabona Naptár Mobil</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="logo-64.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ============ elso inditas ============ -->
+<section id="v-start" class="view" hidden>
+  <div class="start-box">
+    <img class="logo" src="icon-192.png" alt="">
+    <h1>Arrabona Naptár</h1>
+    <p class="soft">Mobil</p>
+    <div class="card">
+      <p>Még nincsenek adatok ezen a telefonon.</p>
+      <p class="soft small">A gépen: <b>Naptárak → Saját naptár kifelé</b> → közzétételi mappa (pl. Dropbox\Naptár),
+        és legyen bepipálva a <b>„Telefonos app adatai is”</b>. A mappában megjelenik az
+        <b>ArrabonaNaptar_mobil.json</b>. Ezt válaszd ki itt a Fájlok appból (Dropbox → Naptár).</p>
+      <button class="btn primary big" data-act="pick">Adatfájl kiválasztása</button>
+      <p class="soft small">Vagy add meg a fájl Dropbox-linkjét, és akkor magától frissül
+        (Beállítások → Dropbox-link).</p>
+      <button class="btn" data-act="settings">Beállítások</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ naptar ============ -->
+<section id="v-cal" class="view" hidden>
+  <header class="top">
+    <button class="icon" data-act="prev" aria-label="Előző hónap">‹</button>
+    <h2 id="m-title"></h2>
+    <button class="icon" data-act="next" aria-label="Következő hónap">›</button>
+    <button class="icon txt" data-act="today">Ma</button>
+  </header>
+  <div class="syncbar" id="syncbar" hidden>
+    <span id="syncbar-t"></span>
+    <button class="mini on" data-act="export">Küldés a gépre</button>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div id="day" class="day"></div>
+</section>
+
+<!-- ============ teendok ============ -->
+<section id="v-todo" class="view" hidden>
+  <header class="top"><h2>Teendők</h2><button class="icon" data-act="new-todo" aria-label="Új teendő">＋</button></header>
+  <div class="syncbar" id="syncbar2" hidden>
+    <span id="syncbar2-t"></span>
+    <button class="mini on" data-act="export">Küldés a gépre</button>
+  </div>
+  <form id="todo-quick" class="quick" autocomplete="off">
+    <input type="text" id="tq" placeholder="Új teendő… (Enter)" enterkeyhint="done">
+    <input type="date" id="tq-due" aria-label="Határidő">
+  </form>
+  <div id="todos"></div>
+</section>
+
+<!-- ============ beallitasok ============ -->
+<section id="v-settings" class="view" hidden>
+  <header class="top"><h2>Beállítások</h2></header>
+  <div class="detail">
+    <div class="card">
+      <p><b>Adatok a gépről</b></p>
+      <p class="soft small" id="s-data"></p>
+      <button class="btn primary" data-act="refresh">Frissítés most</button>
+      <button class="btn" data-act="pick">Adatfájl kiválasztása (ArrabonaNaptar_mobil.json)</button>
+    </div>
+    <div class="card">
+      <p><b>Dropbox-link (automatikus frissítéshez)</b></p>
+      <p class="soft small">A gépen a Dropbox\Naptár mappában jobb gomb az <b>ArrabonaNaptar_mobil.json</b>-on →
+        Megosztás → Hivatkozás másolása. Illeszd be ide. Ha megvan, az app minden megnyitáskor magától frissít.</p>
+      <input type="text" id="s-link" placeholder="https://www.dropbox.com/scl/fi/…" autocapitalize="off"
+             autocorrect="off" spellcheck="false">
+      <div class="two"><button class="btn" data-act="save-link">Mentés és próba</button>
+        <button class="btn" data-act="clear-link">Törlés</button></div>
+    </div>
+    <div class="card">
+      <p><b>Küldés a gépre</b></p>
+      <p class="soft small">A telefonon végzett változásokat (esemény, teendő, műszak) a „Küldés a gépre” gombbal
+        küldöd át: a megosztás ablakban <b>Mentés a Fájlokba</b> → Dropbox → <b>Naptár</b> (ha kérdezi: Csere).
+        A gépen futó Naptár pár másodpercen belül átveszi, utána a következő frissítéskor itt is „szinkronban” lesz.</p>
+      <p class="small" id="s-pending"></p>
+      <button class="btn" data-act="export">Küldés a gépre</button>
+    </div>
+    <div class="card">
+      <label class="row"><span>Időjárás</span><input type="checkbox" id="s-wx"></label>
+      <p class="soft small" id="s-wx-info"></p>
+    </div>
+    <div class="card">
+      <p class="soft small">Emlékeztetőt ez az app nem tud küldeni (az iPhone ezt webappnak nem engedi). Az
+        értesítésekhez használd az iPhone Naptárában a feliratkozott „Arrabona Naptár”-t – az a gép emlékeztetőit
+        is hozza.</p>
+      <button class="btn danger" data-act="forget">Adatok törlése erről a telefonról</button>
+    </div>
+    <p class="soft small center" id="s-ver"></p>
+  </div>
+</section>
+
+<!-- ============ alul: fulek ============ -->
+<nav class="tabs" id="tabs" hidden>
+  <button data-act="tab-cal" id="t-cal" class="on"><span>📅</span>Naptár</button>
+  <button data-act="tab-todo" id="t-todo"><span>☑</span>Teendők</button>
+  <button data-act="tab-settings" id="t-settings"><span>⚙</span>Beállítások</button>
+</nav>
+
+<!-- ============ also lap (sheet) ============ -->
+<div id="sheet" class="sheet" hidden><div class="sheet-box" id="sheet-box"></div></div>
+
+<input type="file" id="file" accept=".json,application/json" hidden>
+<div id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

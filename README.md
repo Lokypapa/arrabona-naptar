@@ -1,4 +1,4 @@
-# Arrabona Naptár v1.4.0
+# Arrabona Naptár v1.5.0
 
 Saját Windows-os naptár magyar ünnepekkel, névnapokkal és emlékeztetőkkel. Az [Arrabona Guard](https://github.com/Lokypapa/arrabona-guard) és az [Arrabona Pass](https://github.com/Lokypapa/arrabona-pass) testvérprogramja: ugyanaz a stílus, és követi a Guard sötét vagy világos témáját.
 
@@ -27,6 +27,11 @@ Saját Windows-os naptár magyar ünnepekkel, névnapokkal és emlékeztetőkkel
   - Bejelölés: a **Műszak** gombbal megjelenik a színes gombsor. Válassz típust, és kattints a napokra; ugyanarra újra kattintva törlődik. Jobb gombbal egy napon rögtön is beállíthatod.
   - **Ismétlődő minta:** pl. `N12 É12 - -` (12 órás forgó), vagy hetente váltott 2 vagy 3 műszak. Egy kattintással kitölti akár az egész évet. Kérésre az ünnepnapokat üresen hagyja, és a már bejelölt szabadságot nem írja felül.
   - **Havi összesítés** a napi panelen: hány műszak és hány munkaóra, fizetett távollét, éjszakai órák (22–6), hétvégi és ünnepnapi órák, valamint a **havi munkaidőkeret** (munkanapok × 8 óra) és az eltérés (túlóra vagy hiány).
+- **Arrabona Naptár Mobil (v1.5.0)** – telefonos app (iPhone-on is), GitHub Pages-ről: https://lokypapa.github.io/arrabona-naptar/
+  - A gép a közzétételi mappába (pl. Dropbox\Naptár) az .ics mellé kiírja az `ArrabonaNaptar_mobil.json`-t: napok (ünnep, áthelyezett munkanap, jeles nap, névnapok), események (ismétlődés kibontva, külső naptárak is), műszakok, teendők, szabadság – a tavalyi, idei és jövő évre.
+  - A telefonon: havi nézet hétszámmal, műszakokkal, időjárással; napi részletek; teendők; műszak beírása; esemény felvétele, szerkesztése, törlése (ismétlődőnél egy alkalom); teendők felvétele és kipipálása.
+  - A telefonos változásokat a „Küldés a gépre” `ArrabonaNaptar_telefon.json` néven menti a Dropboxba; a gépen futó Naptár 10 másodpercen belül átveszi (ütközésnél a gépen frissebb változat marad).
+  - Betöltés a Fájlok appból vagy a fájl Dropbox-linkjéről (akkor minden megnyitáskor magától frissül).
 - **Pontos idő (v1.4.0)** másodpercre a fejlécben, alatta a dátum és a nap.
 - **Időjárás (v1.4.0)** az open-meteo.com ingyenes, regisztráció nélküli szolgáltatásából, alapból Győrre (Beállítások vagy a ⚙ jel: bármelyik település):
   - 16 napra előre: a havi cellákban ikon és maximum, a hét nézetben max/min.
