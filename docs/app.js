@@ -5,7 +5,7 @@
 // Dropbox-link letöltésén kívül semmilyen hálózati kapcsolatot nem használ.
 "use strict";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.0.1";
 const FORMAT = "arrabona-naptar-mobil";
 const PHONE_FORMAT = "arrabona-naptar-telefon";
 const HONAP = ["január", "február", "március", "április", "május", "június", "július", "augusztus",
@@ -133,7 +133,7 @@ function importSnapshot(data, how) {
   const taken = before - S.ops.length;
   return `Frissítve (${how}) – gép: ${data.generated || "?"}` +
     (taken ? ` · ${taken} változásodat a gép átvette` : "") +
-    (S.ops.length ? ` · ${S.ops.length} még nincs a gépen` : "");
+    (unsent() ? ` · ${unsent()} még nincs elküldve` : "");
 }
 
 function directLink(u) {
@@ -183,8 +183,13 @@ async function exportToPc() {
     if (e.name === "AbortError") { toast("Megszakítva – a változások a telefonon maradtak."); return; }
     toast("Nem sikerült: " + e.message, 4000); return;
   }
+  S.ops.forEach(o => { o.sent = 1; });
+  Store.set("ops", S.ops);
   S.cfg.exportedAt = Date.now(); Store.set("cfg", S.cfg);
-  toast("Elküldve. A gépen futó Naptár pár másodpercen belül átveszi; utána a „Frissítés” hozza vissza.", 5000);
+  renderSyncbars();
+  if (S.view === "settings") renderSettings();
+  toast("Elküldve – a gépen futó Naptár pár másodpercen belül átveszi.", 4000);
+  if (S.cfg.link) setTimeout(() => fetchLink(true), 30e3);   // fél perc múlva megnézzük a visszaigazolást
 }
 
 // ======================================================================
@@ -268,8 +273,11 @@ function render() {
   else if (S.view === "settings") renderSettings();
 }
 
+// [1.0.1] a sáv csak a még el NEM küldött változásokat számolja; az elküldöttek a gép
+// visszaigazolásáig (a következő adatfrissítésig) csendben megmaradnak, és újraküldéskor újra mennek
+function unsent() { return S.ops.filter(o => !o.sent).length; }
 function renderSyncbars() {
-  const n = S.ops.length;
+  const n = unsent();
   for (const [b, t] of [["syncbar", "syncbar-t"], ["syncbar2", "syncbar2-t"]]) {
     $(b).hidden = !n; $(t).textContent = `${n} változás még nincs a gépen`;
   }
@@ -500,7 +508,10 @@ function renderSettings() {
       (S.cfg.lastFetch ? ` Utolsó letöltés a linkről: ${new Date(S.cfg.lastFetch).toLocaleString("hu-HU")}.` : "")
     : "Még nincs adat.";
   $("s-link").value = S.cfg.link || "";
-  $("s-pending").textContent = S.ops.length ? `${S.ops.length} változás még nincs a gépen.` : "Minden változás a gépen van.";
+  const un = unsent(), wait = S.ops.length - un;
+  $("s-pending").textContent = !S.ops.length ? "Minden változás a gépen van."
+    : (un ? `${un} változás még nincs elküldve. ` : "") +
+      (wait ? `${wait} elküldve, a gép visszaigazolására vár (a következő adatfrissítéskor eltűnik).` : "");
   $("s-wx").checked = !!S.cfg.wx;
   $("s-wx-info").textContent = sn && sn.weather ? `Település: ${sn.weather.name} (a gépen állítható) · open-meteo.com` : "";
   $("s-ver").textContent = `Arrabona Naptár Mobil v${APP_VERSION}`;
@@ -753,7 +764,7 @@ function init() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
     if (S.sel < todayISO() && S.view === "cal") { /* nap váltás után a kijelölés marad */ }
-    if (S.cfg.link && Date.now() - (S.cfg.lastFetch || 0) > 5 * 60e3) fetchLink(true);
+    if (S.cfg.link && Date.now() - (S.cfg.lastFetch || 0) > 60e3) fetchLink(true);
     loadWeather(false);
   });
   show(S.snap ? "cal" : "start");

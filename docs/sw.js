@@ -1,6 +1,6 @@
 // Arrabona Naptár Mobil – offline működés. A saját fájljain kívül semmit nem tárol.
 // Hálózat elsőbbség (így a frissítés azonnal megjelenik), hálózat nélkül a tárolt példány.
-const CACHE = "anm-1.0.0";
+const CACHE = "anm-1.0.1";
 const FILES = ["./", "index.html", "app.js", "app.css", "manifest.webmanifest",
                "icon-180.png", "icon-192.png", "icon-512.png", "logo-64.png"];
 
