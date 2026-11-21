@@ -14,7 +14,7 @@ from . import APP_NAME, VERSION
 from . import esemenyek as ev
 import webbrowser
 
-from . import feliratkozas, ical, idojaras, mobil, muszak, nevnapok, szabadsag, unnepek, updater
+from . import feliratkozas, ical, idojaras, mobil, muszak, nevnapok, szabadsag, szerver, unnepek, updater
 from .common import (COLORS, load_settings, res_path, save_settings, set_autostart, store_path)
 
 try:
@@ -165,6 +165,10 @@ class NaptarApp:
         self._pub_last = None
         self._pub_pending = False
         self._mob_last = None           # [v1.5.0] telefonos adatfájl utolsó tartalma
+        self._srv_last = None           # [v1.6.0] a szerverre utoljára feltöltött tartalom
+        self._srv_busy = False
+        self._srv_force = False
+        self.srv_state = ""
         self.store.on_save = self._schedule_publish
         self.today = _dt.date.today()
         self.sel = self.today
@@ -197,6 +201,7 @@ class NaptarApp:
         root.after(3000, self._sync_tick)
         root.after(4000, self._publish_now)
         root.after(8000, self._phone_poll)
+        root.after(6000, self._server_tick)
         root.after(1500, self._weather_tick)
         root.after(updater.FIRST_CHECK_MS, self._update_cycle)
         self._tick_clock()
@@ -1441,6 +1446,67 @@ class NaptarApp:
             self.status.config(text=f"A telefonos adatfájl kiírása nem sikerült: {ex}")
             return None
 
+    # ---------- [v1.6.0] szerveres szinkron ----------
+    def _server_tick(self):
+        try:
+            self.server_sync()
+        except Exception as ex:
+            self.srv_state = f"Hiba: {ex}"
+        self.root.after(15000, self._server_tick)
+
+    def server_sync(self, force=False, done=None):
+        s = self.settings
+        base, token = s.get("sync_url", ""), s.get("sync_token", "")
+        if not base or not token or self._srv_busy:
+            return False
+        data = mobil.build(self.store, self.subs.events(), s, self.today)
+        body = mobil.dumps_body(data)
+        upload = force or self._srv_force or body != self._srv_last
+        raw = mobil.full_bytes(data) if upload else None
+        self._srv_busy = True
+        self._srv_force = False
+
+        def work():
+            ops = szerver.get_ops(base, token)
+            if raw is not None:
+                szerver.put_snapshot(base, token, raw)
+            return ops
+
+        def finish(ok, res):
+            self._srv_busy = False
+            now = _dt.datetime.now().strftime("%H:%M:%S")
+            if not ok:
+                if isinstance(res, szerver.ServerError) and res.status == 401:
+                    s["sync_token"] = ""
+                    save_settings(s)
+                    self.srv_state = "A bejelentkezés lejárt – jelentkezz be újra (Naptárak → Szerver-szinkron)."
+                    self.status.config(text="Szerver: " + self.srv_state)
+                else:
+                    self.srv_state = f"{now} – {res}"
+                if done:
+                    done(False, res)
+                return
+            if raw is not None:
+                self._srv_last = body
+            ops = res
+            msg = f"{now} – rendben" + (" (adatok feltöltve)" if raw is not None else "")
+            if ops:
+                st = mobil.apply_ops(self.store, ops, s)
+                self._srv_force = True               # a visszaigazolás ("applied") menjen fel rögtön
+                self.root.after(500, self.server_sync)
+                self.render()
+                parts = [f"{st[k]} {n}" for k, n in (("events", "esemény"), ("todos", "teendő"),
+                                                     ("shifts", "műszak")) if st[k]]
+                msg = f"{now} – telefonról átvéve: " + (", ".join(parts) or "nem volt új változás")
+                if st["conflicts"]:
+                    msg += f" ({st['conflicts']} kimaradt, mert a gépen frissebb volt)"
+                self.status.config(text="Szerver: " + msg)
+            self.srv_state = msg
+            if done:
+                done(True, ops)
+        self.run_bg(work, finish)
+        return True
+
     def _phone_poll(self):
         try:
             self.phone_merge()
@@ -2534,6 +2600,7 @@ class CalendarsDialog(Dialog):
         xf = tk.Frame(b, bg=COLORS['panel'])
         xf.grid(row=13, column=0, columnspan=4, sticky="we", pady=(10, 0))
         btn(xf, "Exportálás fájlba…", self.export_file, small=True).pack(side=tk.LEFT)
+        btn(xf, "Szerver-szinkron…", lambda: ServerDialog(app), small=True).pack(side=tk.LEFT, padx=(0, 6))
         btn(xf, "Importálás .ics-ből…", self.import_file, small=True).pack(side=tk.LEFT, padx=6)
         btn(xf, "Mentés és bezárás", self.save_close, primary=True).pack(side=tk.RIGHT)
         self.fill()
@@ -3104,3 +3171,111 @@ class PlaceDialog(Dialog):
         self.app.weather = None
         self.app.render()
         self.app.refresh_weather()
+
+
+# ======================================================================
+#  [v1.6.0] Szerveres szinkron beállítása
+# ======================================================================
+class ServerDialog(Dialog):
+    def __init__(self, app):
+        super().__init__(app, "Szerver-szinkron")
+        b = self.body
+        s = app.settings
+        label(b, "Saját szerver (pl. arrabonagaming.hu)", bold=True, size=12).grid(row=0, column=0, columnspan=3, sticky="w")
+        label(b, "A gép és a telefon a saját tárhelyeden keresztül szinkronizál – automatikusan, Dropbox és "
+                 "„Küldés a gépre” nélkül. A jelszót a program nem tárolja, csak egy eszköz-azonosítót.",
+              soft=True, size=9, wraplength=460, justify=tk.LEFT).grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 10))
+        self.url = tk.StringVar(value=s.get("sync_url") or "https://arrabonagaming.hu/naptar/")
+        self.user = tk.StringVar(value=s.get("sync_user", ""))
+        self.pw = tk.StringVar()
+        for i, (t, v, sh) in enumerate((("Cím:", self.url, ""), ("Felhasználónév:", self.user, ""),
+                                        ("Jelszó:", self.pw, "•"))):
+            label(b, t, size=10).grid(row=2 + i, column=0, sticky="w", pady=3)
+            e = entry(b, v, width=40)
+            if sh:
+                e.config(show=sh)
+            e.grid(row=2 + i, column=1, columnspan=2, sticky="we", padx=6, ipady=2)
+        self.st_lbl = label(b, "", size=9, wraplength=460, justify=tk.LEFT)
+        self.st_lbl.grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        bf = tk.Frame(b, bg=COLORS['panel'])
+        bf.grid(row=6, column=0, columnspan=3, sticky="we", pady=(12, 0))
+        self.login_btn = btn(bf, "Bejelentkezés", self.do_login, primary=True, small=True)
+        self.login_btn.pack(side=tk.LEFT)
+        btn(bf, "Szinkron most", self.sync_now, small=True).pack(side=tk.LEFT, padx=6)
+        btn(bf, "Kijelentkezés", self.do_logout, small=True).pack(side=tk.LEFT)
+        btn(bf, "Bezár", self.destroy).pack(side=tk.RIGHT)
+        label(b, "Telefonon: nyisd meg a fenti címet Safariban → Megosztás → Főképernyőhöz adás, és jelentkezz be "
+                 "ugyanezzel a felhasználóval.", soft=True, size=8, wraplength=460,
+              justify=tk.LEFT).grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        self._show()
+        self.finish()
+
+    def _show(self, extra=""):
+        s = self.app.settings
+        if s.get("sync_token"):
+            t = f"✓ Bejelentkezve: {s.get('sync_user', '')} @ {s.get('sync_url', '')}"
+            if self.app.srv_state:
+                t += f"\nUtolsó szinkron: {self.app.srv_state}"
+            col = COLORS['ok']
+        else:
+            t, col = "Nincs bejelentkezve.", COLORS['text_soft']
+        self.st_lbl.config(text=t + (f"\n{extra}" if extra else ""), fg=col if not extra.startswith("⚠") else COLORS['bad'])
+
+    def do_login(self):
+        base = szerver.normalize_url(self.url.get())
+        user, pw = self.user.get().strip(), self.pw.get()
+        if not base or not user or not pw:
+            self._show("⚠ Add meg a címet, a felhasználónevet és a jelszót.")
+            return
+        if not szerver.is_secure(base):
+            self._show("⚠ Csak https:// címmel működik.")
+            return
+        self.login_btn.config(state=tk.DISABLED)
+        self._show("Bejelentkezés…")
+
+        def done(ok, res):
+            try:
+                self.login_btn.config(state=tk.NORMAL)
+            except tk.TclError:
+                return
+            if not ok:
+                self._show(f"⚠ {res}")
+                return
+            token, uname = res
+            s = self.app.settings
+            s.update(sync_url=base, sync_user=uname, sync_token=token)
+            save_settings(s)
+            self.pw.set("")
+            self.url.set(base)
+            self.app._srv_last = None
+            self._show("Bejelentkezve – első feltöltés…")
+            self.app.server_sync(force=True, done=lambda o, r: self._after_sync(o, r))
+        self.app.run_bg(lambda: szerver.login(base, user, pw), done)
+
+    def _after_sync(self, ok, res):
+        try:
+            self._show("" if ok else f"⚠ {res}")
+        except tk.TclError:
+            pass
+
+    def sync_now(self):
+        if not self.app.settings.get("sync_token"):
+            self._show("⚠ Előbb jelentkezz be.")
+            return
+        self._show("Szinkron…")
+        if not self.app.server_sync(force=True, done=lambda o, r: self._after_sync(o, r)):
+            self._show("Már folyamatban van egy szinkron, pár másodperc.")
+
+    def do_logout(self):
+        s = self.app.settings
+        base, token = s.get("sync_url", ""), s.get("sync_token", "")
+        if not token:
+            return
+        if not messagebox.askyesno(APP_NAME, "Kijelentkezel a szerverről ezen a gépen?\n"
+                                   "(A szerveren lévő adatok megmaradnak.)", parent=self):
+            return
+        s["sync_token"] = ""
+        save_settings(s)
+        self.app.srv_state = ""
+        self.app.run_bg(lambda: szerver.logout(base, token), lambda ok, r: None)
+        self._show()

@@ -44,6 +44,9 @@ DEFAULT_SETTINGS = {
     "weather_place": {"name": "Győr", "lat": 47.6875, "lon": 17.6504},
     "update_check": True,              # [v1.4.0] önfrissítés GitHubról
     "publish_mobile": True,            # [v1.5.0] ArrabonaNaptar_mobil.json a közzétételi mappába
+    "sync_url": "",                    # [v1.6.0] saját szerver, pl. https://arrabonagaming.hu/naptar/
+    "sync_user": "",
+    "sync_token": "",                  # eszköz-token (a jelszót nem tároljuk)
 }
 
 

@@ -123,6 +123,17 @@ def build(store, ext_events, settings, today=None):
     }
 
 
+def dumps_body(data):
+    """A tartalom 'generated' nélkül – ebből látszik, változott-e valami."""
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def full_bytes(data):
+    full = dict(data)
+    full["generated"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return json.dumps(full, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 def write(folder, data, last_body=None):
     """Kiírás, ha a tartalom változott. Visszaad: (útvonal, a tartalom 'generated' nélkül)."""
     body = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
